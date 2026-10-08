@@ -54,8 +54,9 @@ _STATIC_VISION_MODELS: list[str] = [
 # Instruction-tuned chat models first — reasoning models (nemotron ultra/super)
 # leak chain-of-thought into their output, so they rank last.
 _MODEL_PREFERENCE = [
-    "gemma-4-31b", "gemma-4", "nemotron-3.5-lightning", "laguna-s",
-    "inkling", "ling-", "laguna", "gemma", "lfm",
+    "gemma-4-31b", "gemma-4", "laguna-s", "inkling", "ling-",
+    "laguna", "gemma", "lfm",
+    "nemotron-3.5-lightning",   # leaks chain-of-thought — last resorts
     "nemotron-3-super", "nemotron-3-ultra", "nemotron",
 ]
 
@@ -122,7 +123,100 @@ RETRY_DELAY           = 2    # seconds between retries
 RATE_LIMIT_COOLDOWN   = 60   # seconds before retrying a rate-limited model
 
 _rate_limited: dict[str, float] = {}
-_account_limited_until: float   = 0.0   # set when the whole account 429s
+_account_limited_until: float   = 0.0
+
+OLLAMA_URL = "http://127.0.0.1:11434"
+
+_LOCAL_PREFERENCE = ["llama3.1", "mistral:7b-instruct", "llama-3.2",
+                     "llama3.2", "mistral", "llama3", "llama"]
+
+_local_cache = {"ts": 0.0, "model": None}
+
+
+def _ensure_ollama() -> bool:
+    try:
+        requests.get(f"{OLLAMA_URL}/api/tags", timeout=2)
+        return True
+    except Exception:
+        pass
+    import shutil as _sh, subprocess as _sp
+    if not _sh.which("ollama"):
+        return False
+    try:
+        _sp.Popen(["ollama", "serve"], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        for _ in range(20):
+            time.sleep(0.5)
+            try:
+                requests.get(f"{OLLAMA_URL}/api/tags", timeout=2)
+                logger.info("[Local] 🏠 Started Ollama server")
+                return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
+def _pick_local_model() -> Optional[str]:
+    if time.time() - _local_cache["ts"] < 600 and _local_cache["model"]:
+        return _local_cache["model"]
+    if not _ensure_ollama():
+        return None
+    try:
+        # user override from config
+        with open(API_KEY_PATH, "r", encoding="utf-8") as f:
+            override = json.load(f).get("ollama_model", "").strip()
+    except Exception:
+        override = ""
+    try:
+        tags = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5).json()
+        models = [m["name"] for m in tags.get("models", [])
+                  if "completion" in m.get("capabilities", ["completion"])
+                  and "deepseek-r1" not in m["name"]
+                  and "embed" not in m["name"].lower()
+                  and "bge-" not in m["name"].lower()]
+        if not models:
+            return None
+        if override and any(override in m for m in models):
+            chosen = next(m for m in models if override in m)
+        else:
+            def rank(name):
+                low = name.lower()
+                for i, pref in enumerate(_LOCAL_PREFERENCE):
+                    if pref in low:
+                        return i
+                return len(_LOCAL_PREFERENCE)
+            chosen = sorted(models, key=rank)[0]
+        _local_cache.update({"ts": time.time(), "model": chosen})
+        return chosen
+    except Exception:
+        return None
+
+
+def _call_local(messages: list[dict], max_tokens: int,
+                temperature: float) -> Optional[str]:
+    model = _pick_local_model()
+    if not model:
+        return None
+    try:
+        logger.info(f"[Local] 🏠 Answering offline with ollama/{model}")
+        r = requests.post(
+            f"{OLLAMA_URL}/v1/chat/completions",
+            json={"model": model, "messages": messages,
+                  "max_tokens": max_tokens, "temperature": temperature},
+            timeout=120,
+        )
+        if r.status_code != 200:
+            return None
+        content = (r.json().get("choices", [{}])[0]
+                    .get("message", {}).get("content", "")) or ""
+        # strip any <think> blocks a reasoning-tuned model might emit
+        import re as _re
+        content = _re.sub(r"<think>.*?</think>", "", content, flags=_re.S).strip()
+        return content or None
+    except Exception as e:
+        logger.warning(f"[Local] ollama call failed: {e}")
+        return None
 
 class OpenRouterClient:
 
@@ -197,8 +291,13 @@ class OpenRouterClient:
                         data.get("choices", [{}])[0]
                             .get("message", {})
                             .get("content", "")
-                    )
-                    return content.strip() if content else None
+                    ) or ""
+                    # some free models leak reasoning despite exclude
+                    import re as _re
+                    content = _re.sub(r"<think>.*?</think>", "", content, flags=_re.S)
+                    content = _re.sub(r"^Here's a thinking process.*?\n\n(?=\S)", "",
+                                      content, flags=_re.S)
+                    return content.strip() or None
 
                 if resp.status_code in (403, 404):
                     # 404: model removed. 403: model needs an account-level
@@ -213,6 +312,10 @@ class OpenRouterClient:
                     f"(attempt {attempt}/{MAX_RETRIES_PER_MODEL})"
                 )
 
+            except requests.exceptions.ConnectionError:
+                self._net_err = True
+                logger.warning(f"[OpenRouter] {model} → network unreachable")
+                return None
             except requests.exceptions.Timeout:
                 logger.warning(
                     f"[OpenRouter] {model} → Timeout "
@@ -246,20 +349,34 @@ class OpenRouterClient:
 
         global _account_limited_until
         if time.time() < _account_limited_until:
+            local = _call_local(messages, max_tokens, temperature)
+            if local:
+                return local
             raise RuntimeError(
                 "[OpenRouter] Free-tier account limit active — backing off "
                 f"for {int(_account_limited_until - time.time())}s more."
             )
 
         limited_streak = 0
+        net_streak     = 0
+        self._net_err  = False
         for m in pool:
             if self._is_rate_limited(m):
                 continue
             logger.info(f"[OpenRouter] Trying: {m}")
+            self._net_err = False
             result = self._call(m, messages, max_tokens, temperature, response_format)
             if result:
                 logger.info(f"[OpenRouter] ✓ Success: {m}")
                 return result
+
+            if self._net_err:
+                net_streak += 1
+                if net_streak >= 2:          # offline — stop walking the pool
+                    logger.warning("[OpenRouter] Network down → local brain")
+                    break
+            else:
+                net_streak = 0
 
             # distinguish "this model is busy" from "my whole account is
             # capped": several different models 429ing back-to-back means
@@ -276,9 +393,12 @@ class OpenRouterClient:
             else:
                 limited_streak = 0
 
+        local = _call_local(messages, max_tokens, temperature)
+        if local:
+            return local
         raise RuntimeError(
-            "[OpenRouter] All models failed or are rate-limited. "
-            "Check your API key and network connection."
+            "[OpenRouter] All remote models failed and no local Ollama "
+            "model is available. Check network / run 'ollama serve'."
         )
 
     def chat(

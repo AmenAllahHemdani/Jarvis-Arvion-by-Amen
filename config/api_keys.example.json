@@ -10,5 +10,6 @@
     "telegram_chat_id": "",
     "telegram_webhook_secret": "",
     "telegram_webhook_url": "",
-    "wake_word": false
+    "wake_word": false,
+    "ollama_model": ""
 }

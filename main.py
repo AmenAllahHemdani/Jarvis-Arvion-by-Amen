@@ -92,6 +92,16 @@ def _is_connection_error(exc: BaseException) -> bool:
             return True
     return False
 
+def _network_up() -> bool:
+    """Fast offline check — DNS resolution fails immediately without a route."""
+    import socket
+    try:
+        socket.getaddrinfo("generativelanguage.googleapis.com", 443)
+        return True
+    except OSError:
+        return False
+
+
 def _flatten_exceptions(exc: BaseException) -> list:
     """Unwrap (nested) ExceptionGroups into a flat list of leaf exceptions."""
     if isinstance(exc, BaseExceptionGroup):
@@ -705,7 +715,10 @@ class JarvisLive:
                 self._loop)
 
     def _on_text_command(self, text: str):
-        if not self._loop or not self.session:
+        # offline (or no session yet): answer with the local Ollama brain
+        if getattr(self, "_offline", False) or not self._loop or not self.session:
+            threading.Thread(target=self._local_reply, args=(text,),
+                             daemon=True).start()
             return
         asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
@@ -714,6 +727,32 @@ class JarvisLive:
             ),
             self._loop
         )
+
+    def _local_reply(self, text: str):
+        """Offline text chat via the local Ollama model."""
+        try:
+            from or_client import client
+            memory_ctx = ""
+            try:
+                memory_ctx = format_memory_for_prompt(load_memory()) or ""
+            except Exception:
+                pass
+            system = (
+                "You are JARVIS, the user's personal AI assistant, running in "
+                "OFFLINE mode on their computer — no internet, no tools. Answer "
+                "from knowledge, concisely (2-3 sentences max), address the user "
+                "as 'sir', reply in the user's language.\n" + memory_ctx
+            )
+            reply = client.chat(text, system=system, max_tokens=512) or ""
+        except Exception as e:
+            reply = f"Local brain unavailable, sir: {str(e)[:100]}"
+        self.ui.write_log(f"Jarvis: {reply}")
+        try:
+            import subprocess
+            subprocess.Popen(["say", reply[:400]],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
 
     def _badge(self, which: str, text: str, color: str):
         try:
@@ -1239,10 +1278,30 @@ class JarvisLive:
             http_options={"api_version": "v1beta"}
         )
 
-        model_idx   = 0
-        fail_streak = 0
+        model_idx     = 0
+        fail_streak   = 0
+        self._offline = False
 
         while True:
+            # no network? don't hammer Google or rotate models — wait for it
+            # to return; typed commands are answered by the local brain.
+            if not _network_up():
+                if not self._offline:
+                    self._offline = True
+                    print("[JARVIS] 📡 Offline — local brain handles typed commands")
+                    self.ui.write_log("SYS: Offline — type to me, the local "
+                                      "brain will answer. Voice needs internet.")
+                    self._badge("core",  "AI CORE\nOFFLINE", "#ff6b00")
+                    self._badge("model", "MODEL\nLOCAL",     "#ffcc00")
+                    self.ui.set_state("THINKING")
+                await asyncio.sleep(4)
+                continue
+            if self._offline:
+                self._offline = False
+                fail_streak   = 0
+                print("[JARVIS] 📡 Network restored — reconnecting")
+                self.ui.write_log("SYS: Back online — reconnecting.")
+
             model = LIVE_MODELS[model_idx % len(LIVE_MODELS)]
             session_start = None
             try:
@@ -1303,10 +1362,15 @@ class JarvisLive:
                     print("[JARVIS] ⚠️ Resume handle rejected — starting a fresh session.")
                     self._resume_handle = None
 
+            self.session = None
+
             # Model failover: two sessions in a row dying within 30s means
             # the model itself is broken (e.g. server-side 1011) — rotate.
+            # Network outages don't count against the model.
             alive = (time.time() - session_start) if session_start else 0
-            if alive < 30:
+            if not _network_up():
+                pass
+            elif alive < 30:
                 fail_streak += 1
                 if fail_streak >= 2:
                     model_idx  += 1
