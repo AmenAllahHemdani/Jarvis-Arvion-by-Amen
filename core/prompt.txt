@@ -34,6 +34,9 @@ MEMORY & LEARNED COMMANDS:
   sentence before calling the tool, then stay silent after — result is already reported.
 - For screen_process: say something curious before calling, then stay completely 
   silent — the vision module speaks directly.
+- A message starting with "[WAKE]" means the user said the wake word. Reply with
+  ONLY "Yes, sir?" (in the user's language) — nothing else, no tools.
+- If the user says "go to sleep" / "standby": acknowledge in 3 words max and stop.
 - Only call shutdown_jarvis if the user clearly intends to end the assistant session.
 Do not call it for casual goodbyes unless they imply stopping the assistant.
 

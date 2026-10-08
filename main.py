@@ -640,6 +640,45 @@ class JarvisLive:
         self._resume_handle = None
         self.ui.on_text_command = self._on_text_command
 
+        # Wake-word standby: when enabled, mic audio is analysed on-device
+        # and nothing streams to Gemini until "hey Jarvis" is heard.
+        self._wake_detector = None
+        self._awake_until   = 0.0      # awake while time.time() < this
+        self._was_awake     = True
+        try:
+            cfg = json.loads(API_CONFIG_PATH.read_text(encoding="utf-8"))
+            if cfg.get("wake_word", False):
+                from actions.wake_word import WakeWordDetector
+                det = WakeWordDetector()
+                if det.available:
+                    self._wake_detector = det
+                    self._was_awake     = False
+        except Exception as e:
+            print(f"[WakeWord] init failed: {e}")
+
+    def _is_awake(self) -> bool:
+        return self._wake_detector is None or time.time() < self._awake_until
+
+    def _extend_awake(self, seconds: float = 45.0):
+        if self._wake_detector is not None:
+            self._awake_until = max(self._awake_until, time.time() + seconds)
+
+    def _wake_up(self):
+        print("[WakeWord] 🟢 'hey Jarvis' — listening")
+        self._extend_awake(45)
+        self._was_awake = True
+        self.ui.write_log("SYS: Wake word — at your service.")
+        self._badge("core", "AI CORE\nACTIVE", "#00ff88")
+        self.ui.set_state("LISTENING")
+        if self.session and self._loop:
+            asyncio.run_coroutine_threadsafe(
+                self.session.send_client_content(
+                    turns={"role": "user",
+                           "parts": [{"text": "[WAKE] The user just said the wake "
+                                              "word. Reply with only: 'Yes, sir?'"}]},
+                    turn_complete=True),
+                self._loop)
+
     def _on_text_command(self, text: str):
         if not self._loop or not self.session:
             return
@@ -931,6 +970,11 @@ class JarvisLive:
         BARGE_IN_RMS = 900   # int16 RMS; raise if he interrupts himself
 
         def callback(indata, frames, time_info, status):
+            # standby: analyse locally for "hey Jarvis", stream nothing
+            if not self._is_awake():
+                if self._wake_detector.feed(indata.copy()):
+                    loop.call_soon_threadsafe(self._wake_up)
+                return
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
             if jarvis_speaking:
@@ -964,6 +1008,16 @@ class JarvisLive:
                         )
                         stream.start()
                         print("[JARVIS] 🎤 Mic stream open")
+
+                # awake window expired → announce standby once
+                if self._wake_detector is not None:
+                    awake = self._is_awake()
+                    if self._was_awake and not awake:
+                        self._was_awake = False
+                        self._wake_detector.reset()
+                        print("[WakeWord] 💤 Standby — say 'hey Jarvis' to wake me")
+                        self.ui.write_log("SYS: Standby — say 'hey Jarvis'.")
+                        self._badge("core", "AI CORE\nSTANDBY", "#5ab8cc")
                 await asyncio.sleep(0.3)
         except Exception as e:
             print(f"[JARVIS] ❌ Mic: {e}")
@@ -991,9 +1045,13 @@ class JarvisLive:
 
                     if response.data:
                         self.audio_in_queue.put_nowait(response.data)
+                        self._extend_awake(30)   # he's mid-answer — stay awake
 
                     if response.server_content:
                         sc = response.server_content
+
+                        if sc.input_transcription and sc.input_transcription.text:
+                            self._extend_awake(45)   # user is talking
 
                         if sc.interrupted:
                             # user talked over JARVIS — dump every chunk of
@@ -1026,6 +1084,11 @@ class JarvisLive:
                             full_in = " ".join(in_buf).strip()
                             if full_in:
                                 self.ui.write_log(f"You: {full_in}")
+                                if self._wake_detector is not None and any(
+                                        p in full_in.lower() for p in
+                                        ("go to sleep", "standby", "stand by",
+                                         "va dormir", "mets-toi en veille")):
+                                    self._awake_until = 0.0
                             in_buf = []
 
                             full_out = " ".join(out_buf).strip()

@@ -9,5 +9,6 @@
     "telegram_bot_token": "",
     "telegram_chat_id": "",
     "telegram_webhook_secret": "",
-    "telegram_webhook_url": ""
+    "telegram_webhook_url": "",
+    "wake_word": false
 }
