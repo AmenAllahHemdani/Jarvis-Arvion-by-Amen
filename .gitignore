@@ -1,0 +1,10 @@
+venv/
+mobile
+__pycache__/
+*.pyc
+.claude
+config/api_keys.json
+deploy/
+memory/long_term.json
+launch_jarvis.command
+setup.py

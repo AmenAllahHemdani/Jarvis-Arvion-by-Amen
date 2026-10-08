@@ -1,0 +1,13 @@
+{
+    "gemini_api_key": "",
+    "openrouter_api_key": "",
+    "os_system": "Darwin",
+    "email_sender": "",
+    "email_app_password": "",
+    "email_default_to": "",
+    "telegram_username": "",
+    "telegram_bot_token": "",
+    "telegram_chat_id": "",
+    "telegram_webhook_secret": "",
+    "telegram_webhook_url": ""
+}
