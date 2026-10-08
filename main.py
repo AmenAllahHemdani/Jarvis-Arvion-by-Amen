@@ -614,6 +614,31 @@ TOOL_DECLARATIONS = [
         }
     },
     {
+        "name": "analyze_habits",
+        "description": (
+            "Analyze the user's observed behaviour patterns (which apps they open, "
+            "when, what they do repeatedly). Call when the user asks about their "
+            "habits, routines, usage, or 'what do you know about how I work'."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {}}
+    },
+    {
+        "name": "behavior_suggestion_response",
+        "description": (
+            "Record the user's answer to a habit suggestion you presented "
+            "(messages starting with [HABIT]). accepted=true also saves the "
+            "routine automatically — do NOT call save_routine yourself."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "id":       {"type": "STRING", "description": "The suggestion id given in the [HABIT] message"},
+                "accepted": {"type": "BOOLEAN", "description": "true if the user said yes"},
+            },
+            "required": ["id", "accepted"]
+        }
+    },
+    {
         "name": "forget_routine",
         "description": "Delete a saved routine/custom command when the user asks to remove or change it.",
         "parameters": {
@@ -768,7 +793,28 @@ class JarvisLive:
         args = dict(fc.args or {})
 
         print(f"[JARVIS] 🔧 {name}  {args}")
+        try:
+            from memory import behavior
+            behavior.log_event(name, args)
+        except Exception:
+            pass
         self.ui.set_state("THINKING")
+
+        if name == "analyze_habits":
+            from memory import behavior
+            summary = behavior.habits_summary()
+            return types.FunctionResponse(id=fc.id, name=name,
+                                          response={"result": summary})
+
+        if name == "behavior_suggestion_response":
+            from memory import behavior
+            sid      = str(args.get("id", ""))
+            accepted = str(args.get("accepted", "")).lower() in ("true", "1", "yes")
+            result   = behavior.respond_suggestion(sid, accepted)
+            print(f"[Behavior] 💡 suggestion {sid}: "
+                  f"{'accepted' if accepted else 'dismissed'}")
+            return types.FunctionResponse(id=fc.id, name=name,
+                                          response={"result": result})
         if name == "save_memory":
             category = args.get("category", "notes")
             key      = args.get("key", "")
@@ -951,6 +997,28 @@ class JarvisLive:
                 q.put_nowait(item)
             except (asyncio.QueueEmpty, asyncio.QueueFull):
                 pass
+
+    async def _maybe_suggest_habit(self):
+        """Once per day, propose turning an observed habit into a routine."""
+        await asyncio.sleep(12)   # let the session settle first
+        try:
+            from memory import behavior
+            s = behavior.get_startup_suggestion()
+        except Exception as e:
+            print(f"[Behavior] suggestion check failed: {e}")
+            return
+        if not s or not self.session:
+            return
+        print(f"[Behavior] 💡 suggesting habit: {s['id']}")
+        await self.session.send_client_content(
+            turns={"role": "user", "parts": [{"text":
+                f"[HABIT] (system observation, not the user speaking) The user "
+                f"opens {', '.join(s['apps'])} together around {s['hour']:02d}:00 "
+                f"— seen on {s['days']} different days. Briefly propose creating "
+                f"the voice command '{s['trigger']}' that opens them all, and ask "
+                f"yes or no. When they answer, call behavior_suggestion_response "
+                f"with id='{s['id']}' and accepted=true/false."}]},
+            turn_complete=True)
 
     async def _send_realtime(self):
         while True:
@@ -1219,6 +1287,8 @@ class JarvisLive:
                     tg.create_task(self._listen_audio())
                     tg.create_task(self._receive_audio())
                     tg.create_task(self._play_audio())
+                    if not resuming:
+                        tg.create_task(self._maybe_suggest_habit())
 
             except Exception as e:
                 leaves = _flatten_exceptions(e)

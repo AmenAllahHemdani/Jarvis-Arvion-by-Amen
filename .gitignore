@@ -8,3 +8,5 @@ deploy/
 memory/long_term.json
 launch_jarvis.command
 setup.py
+memory/behavior_log.jsonl
+memory/behavior_suggestions.json
