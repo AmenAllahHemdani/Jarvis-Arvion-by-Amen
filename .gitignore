@@ -10,3 +10,4 @@ launch_jarvis.command
 setup.py
 memory/behavior_log.jsonl
 memory/behavior_suggestions.json
+memory/media_history.json

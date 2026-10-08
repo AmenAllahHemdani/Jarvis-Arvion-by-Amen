@@ -624,6 +624,50 @@ TOOL_DECLARATIONS = [
         }
     },
     {
+        "name": "media_history",
+        "description": (
+            "The user's YouTube listening/watching history (music, quran, videos "
+            "JARVIS saw them play). Actions: "
+            "'replay' — reopen the most recent video from the start ('replay it', "
+            "'play it again from the beginning'); "
+            "'play' — find a remembered video by query and play it ('play my "
+            "quran', 'play that song I always listen to', 'play X from my history'); "
+            "'list' — tell the user what they listened to recently / most; "
+            "'dismiss' — stop offering a video they declined."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":   {"type": "STRING", "description": "replay | play | list | dismiss"},
+                "query":    {"type": "STRING", "description": "What to find for play/dismiss (title words, 'quran', artist)"},
+                "category": {"type": "STRING", "description": "Optional filter for list: music | quran"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "read_document",
+        "description": (
+            "Read a document and answer about it. Three sources: "
+            "url — any web page, online PDF, or Google Drive/Docs share link; "
+            "file_name — a file on this computer found by (partial) name in "
+            "Desktop/Downloads/Documents (pdf, docx, html, txt, code); "
+            "source='screen' — read the document currently visible on screen. "
+            "Use when the user says 'read this pdf', 'summarize this link', "
+            "'what does the file X say', 'read the document on my screen'."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "url":       {"type": "STRING", "description": "Web/Drive URL to read"},
+                "file_name": {"type": "STRING", "description": "File name (or part of it) to find locally"},
+                "source":    {"type": "STRING", "description": "'screen' to read what is displayed"},
+                "question":  {"type": "STRING", "description": "What the user wants to know about it"},
+            },
+            "required": []
+        }
+    },
+    {
         "name": "analyze_habits",
         "description": (
             "Analyze the user's observed behaviour patterns (which apps they open, "
@@ -960,6 +1004,46 @@ class JarvisLive:
                 r = await loop.run_in_executor(None, lambda: computer_settings(parameters=args, response=None, player=self.ui))
                 result = r or "Done."
 
+            elif name == "media_history":
+                from memory import media_history as mh
+                import subprocess as _sp
+                action = (args.get("action") or "").lower()
+                query  = args.get("query") or ""
+                if action == "replay":
+                    e = mh.most_recent()
+                    if not e:
+                        result = "No watched videos in my memory yet, sir."
+                    else:
+                        _sp.Popen(["open", e["url"] + "&t=0"])
+                        result = f"Replaying from the start: {e['title'][:70]}"
+                elif action == "play":
+                    e = mh.find(query)
+                    if not e:
+                        result = (f"Nothing matching '{query}' in your history, sir. "
+                                  f"Use youtube_video to search YouTube instead.")
+                    else:
+                        _sp.Popen(["open", e["url"]])
+                        result = f"Playing from your history: {e['title'][:70]}"
+                elif action == "dismiss":
+                    result = mh.dismiss(query)
+                else:
+                    cat   = (args.get("category") or "").lower()
+                    rec   = mh.recent(6, cat)
+                    fav   = mh.favorites(3, cat)
+                    if not rec:
+                        result = "I haven't seen you play anything yet, sir."
+                    else:
+                        result = ("Recently: "
+                                  + "; ".join(e["title"][:50] for e in rec)
+                                  + ". Most played: "
+                                  + "; ".join(f"{e['title'][:50]} ({e['count']}×)"
+                                              for e in fav) + ".")
+
+            elif name == "read_document":
+                from actions.read_document import read_document
+                r = await loop.run_in_executor(None, lambda: read_document(parameters=args, player=self.ui))
+                result = r or "Could not read the document."
+
             elif name == "desktop_control":
                 r = await loop.run_in_executor(None, lambda: desktop_control(parameters=args, player=self.ui))
                 result = r or "Done."
@@ -1047,6 +1131,23 @@ class JarvisLive:
             print(f"[Behavior] suggestion check failed: {e}")
             return
         if not s or not self.session:
+            # no app habit today — maybe offer a favourite video instead
+            try:
+                from memory import media_history
+                e = media_history.get_daily_offer()
+            except Exception:
+                e = None
+            if e and self.session:
+                print(f"[MediaHistory] 💿 offering: {e['title'][:50]}")
+                await self.session.send_client_content(
+                    turns={"role": "user", "parts": [{"text":
+                        f"[MEDIA] (system observation, not the user speaking) "
+                        f"The user has played '{e['title'][:70]}' {e['count']} "
+                        f"times. In ONE short sentence offer to put it on now, "
+                        f"yes/no. Yes → media_history action='play' "
+                        f"query='{e['title'][:50]}'. No → media_history "
+                        f"action='dismiss' with the same query."}]},
+                    turn_complete=True)
             return
         print(f"[Behavior] 💡 suggesting habit: {s['id']}")
         await self.session.send_client_content(
@@ -1097,24 +1198,49 @@ class JarvisLive:
         # While muted the input device is fully RELEASED (not just ignored):
         # holding a mic open forces Bluetooth headphones into low-quality
         # call mode (HFP) — releasing it lets music return to hi-fi A2DP.
-        stream = None
+        stream     = None
+        open_fails = 0
         try:
             while True:
                 if self.ui.muted:
                     if stream is not None:
-                        stream.stop(); stream.close(); stream = None
+                        try:
+                            stream.stop(); stream.close()
+                        except Exception:
+                            pass
+                        stream = None
                         print("[JARVIS] 🎤 Mic released (muted) — audio back to hi-fi")
                 else:
+                    # device switched (e.g. Bluetooth) → stream goes inactive
+                    if stream is not None and not stream.active:
+                        print("[JARVIS] 🎤 Mic stream died — reopening")
+                        try:
+                            stream.close()
+                        except Exception:
+                            pass
+                        stream = None
                     if stream is None:
-                        stream = sd.InputStream(
-                            samplerate=SEND_SAMPLE_RATE,
-                            channels=CHANNELS,
-                            dtype="int16",
-                            blocksize=CHUNK_SIZE,
-                            callback=callback,
-                        )
-                        stream.start()
-                        print("[JARVIS] 🎤 Mic stream open")
+                        try:
+                            stream = sd.InputStream(
+                                samplerate=SEND_SAMPLE_RATE,
+                                channels=CHANNELS,
+                                dtype="int16",
+                                blocksize=CHUNK_SIZE,
+                                callback=callback,
+                            )
+                            stream.start()
+                            if open_fails:
+                                print("[JARVIS] 🎤 Mic recovered")
+                            else:
+                                print("[JARVIS] 🎤 Mic stream open")
+                            open_fails = 0
+                        except Exception as e:
+                            stream = None
+                            open_fails += 1
+                            if open_fails in (1, 4):
+                                print(f"[JARVIS] 🎤 Mic unavailable ({e}) — retrying")
+                            await asyncio.sleep(1.5)
+                            continue
 
                 # awake window expired → announce standby once
                 if self._wake_detector is not None:
@@ -1240,18 +1366,17 @@ class JarvisLive:
 
     async def _play_audio(self):
         print("[JARVIS] 🔊 Play started")
-        loop = asyncio.get_event_loop()
 
-        stream = sd.RawOutputStream(
-            samplerate=RECEIVE_SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="int16",
-            blocksize=CHUNK_SIZE,
-        )
-        stream.start()
+        # The output device can vanish mid-session (Bluetooth headphones
+        # switching profiles / disconnecting) — PortAudio then fails with
+        # -9986 until re-initialized. Open lazily, retry, reopen on death;
+        # never let a dead speaker kill the whole session.
+        stream     = None
+        open_fails = 0
         try:
             while True:
                 chunk = await self.audio_in_queue.get()
+
                 # single-voice rule: while the vision module is speaking,
                 # the main session's audio is dropped so the two Gemini
                 # voices never overlap on the speakers
@@ -1262,15 +1387,47 @@ class JarvisLive:
                         continue
                 except Exception:
                     pass
-                self.set_speaking(True)
-                await asyncio.to_thread(stream.write, chunk)
-        except Exception as e:
-            print(f"[JARVIS] ❌ Play: {e}")
-            raise
+
+                if stream is None:
+                    try:
+                        stream = sd.RawOutputStream(
+                            samplerate=RECEIVE_SAMPLE_RATE,
+                            channels=CHANNELS,
+                            dtype="int16",
+                            blocksize=CHUNK_SIZE,
+                        )
+                        stream.start()
+                        if open_fails:
+                            print("[JARVIS] 🔊 Speaker recovered")
+                        open_fails = 0
+                    except Exception as e:
+                        stream = None
+                        open_fails += 1
+                        if open_fails in (1, 4):
+                            print(f"[JARVIS] 🔇 Speaker unavailable ({e}) — retrying")
+                        if open_fails == 4:
+                            from actions.audio_io import reset_portaudio
+                            reset_portaudio()
+                        await asyncio.sleep(1.5)
+                        continue   # this chunk is dropped — stale anyway
+
+                try:
+                    self.set_speaking(True)
+                    await asyncio.to_thread(stream.write, chunk)
+                except Exception as e:
+                    print(f"[JARVIS] 🔇 Output stream died ({e}) — reopening")
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+                    stream = None
         finally:
             self.set_speaking(False)
-            stream.stop()
-            stream.close()
+            if stream is not None:
+                try:
+                    stream.stop(); stream.close()
+                except Exception:
+                    pass
 
     async def run(self):
         client = genai.Client(

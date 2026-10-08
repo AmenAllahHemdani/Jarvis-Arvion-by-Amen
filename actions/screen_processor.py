@@ -295,24 +295,42 @@ class _LiveSession:
             raise   # tear down the TaskGroup so _main builds a fresh session
 
     async def _play_loop(self):
-        stream = sd.RawOutputStream(
-            samplerate=RECEIVE_SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="int16",
-            blocksize=CHUNK_SIZE,
-        )
-        stream.start()
+        # self-healing output: device switches (Bluetooth) must not kill
+        # the vision session — reopen on failure, drop stale chunks
+        stream = None
         try:
             while True:
                 chunk = await self._audio_in.get()
                 _mark_vision_speaking(1.5)   # extend mute window per chunk
-                await asyncio.to_thread(stream.write, chunk)
-        except Exception as e:
-            print(f"[ScreenProcess] ❌ Play error: {e}")
-            raise
+                if stream is None:
+                    try:
+                        stream = sd.RawOutputStream(
+                            samplerate=RECEIVE_SAMPLE_RATE,
+                            channels=CHANNELS,
+                            dtype="int16",
+                            blocksize=CHUNK_SIZE,
+                        )
+                        stream.start()
+                    except Exception as e:
+                        print(f"[ScreenProcess] 🔇 Speaker unavailable ({e})")
+                        stream = None
+                        await asyncio.sleep(1.5)
+                        continue
+                try:
+                    await asyncio.to_thread(stream.write, chunk)
+                except Exception as e:
+                    print(f"[ScreenProcess] 🔇 Output died ({e}) — reopening")
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+                    stream = None
         finally:
-            stream.stop()
-            stream.close()
+            if stream is not None:
+                try:
+                    stream.stop(); stream.close()
+                except Exception:
+                    pass
 
     def analyze(self, image_bytes: bytes, mime_type: str, user_text: str):
         if not self._loop:

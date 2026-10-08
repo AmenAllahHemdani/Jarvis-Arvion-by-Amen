@@ -344,6 +344,13 @@ class _NowPlayingWatcher:
                         self._fetch_art(
                             vid.group(1),
                             f"https://img.youtube.com/vi/{vid.group(1)}/mqdefault.jpg")
+                        if vid.group(1) != getattr(self, "_logged_vid", ""):
+                            self._logged_vid = vid.group(1)
+                            try:
+                                from memory import media_history
+                                media_history.log_entry(title, url.strip())
+                            except Exception:
+                                pass
                     return
 
         self.title, self.artist, self.playing = "", "", False
