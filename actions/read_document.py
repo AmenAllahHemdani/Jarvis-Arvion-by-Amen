@@ -33,15 +33,58 @@ def _clip(text: str) -> str:
 # ───────────── extraction by format ─────────────
 
 def _pdf_text(data: bytes) -> str:
-    from pypdf import PdfReader
-    reader = PdfReader(io.BytesIO(data))
-    pages = []
-    for page in reader.pages[:60]:
+    # 1) PyMuPDF — best text extraction; 2) pypdf as backup;
+    # 3) OCR fallback when the PDF is a scan (no embedded text).
+    text = ""
+    try:
         try:
-            pages.append(page.extract_text() or "")
+            import pymupdf
+        except ImportError:
+            import fitz as pymupdf
+        doc = pymupdf.open(stream=data, filetype="pdf")
+        pages = []
+        for i, page in enumerate(doc):
+            if i >= 60:
+                break
+            pages.append(page.get_text())
+        doc.close()
+        text = "\n".join(pages)
+    except Exception:
+        pass
+
+    if not text.strip():
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(data))
+            pages = []
+            for page in reader.pages[:60]:
+                try:
+                    pages.append(page.extract_text() or "")
+                except Exception:
+                    continue
+            text = "\n".join(pages)
         except Exception:
-            continue
-    return "\n".join(pages)
+            pass
+
+    # Scanned / image-only PDF → OCR the rendered pages
+    if len(text.strip()) < 100:
+        print("[ReadDoc] 🔍 No embedded text — running OCR…")
+        try:
+            from actions.ocr_utils import ocr_pdf_bytes
+        except ImportError:
+            from ocr_utils import ocr_pdf_bytes
+        ocr_text = ocr_pdf_bytes(data)
+        if len(ocr_text.strip()) > len(text.strip()):
+            return ocr_text
+    return text
+
+
+def _image_text(data: bytes) -> str:
+    try:
+        from actions.ocr_utils import ocr_image_bytes
+    except ImportError:
+        from ocr_utils import ocr_image_bytes
+    return ocr_image_bytes(data)
 
 
 def _docx_text(data: bytes) -> str:
@@ -119,6 +162,8 @@ def _read_url(url: str) -> str:
     ctype = r.headers.get("Content-Type", "")
     if "pdf" in ctype:
         hint += ".pdf"
+    if ctype.startswith("image/"):
+        return _image_text(r.content)
     return _bytes_to_text(r.content, hint)
 
 
@@ -176,6 +221,10 @@ def _find_candidates(name: str) -> list[Path]:
     return hits[:6]
 
 
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".tiff", ".tif",
+              ".bmp", ".heic", ".gif"}
+
+
 def _read_file(path: Path) -> str:
     ext = path.suffix.lower()
     data = path.read_bytes()
@@ -185,9 +234,11 @@ def _read_file(path: Path) -> str:
         return _docx_text(data)
     if ext in (".html", ".htm"):
         return _html_text(data)
+    if ext in IMAGE_EXTS:
+        return _image_text(data)
     if ext in TEXT_EXTS or not ext:
         return data.decode("utf-8", errors="replace")
-    return (f"[error] I can read pdf, docx, html and text files — "
+    return (f"[error] I can read pdf, docx, html, text and image files — "
             f"'{path.name}' is {ext or 'unknown type'}.")
 
 
@@ -214,26 +265,35 @@ def read_document(parameters=None, response=None, player=None,
             text = _read_url(url)
             origin = url
         else:
-            matches = _find_candidates(file_name)
-            if not matches:
-                return (f"I couldn't find a file matching '{file_name}' in "
-                        f"Desktop, Downloads or Documents, sir.")
-            if len(matches) > 1:
-                names = " | ".join(m.name for m in matches)
-                return (f"MULTIPLE MATCHES for '{file_name}': {names}. "
-                        f"Call show_option_picker with these file names "
-                        f"(on_select 'say'); when the user picks one, call "
-                        f"read_document again with that exact file_name.")
-            found = matches[0]
-            print(f"[ReadDoc] 📄 {found}")
-            text = _read_file(found)
-            origin = found.name
+            # full path given (drag-dropped / dictated) → use it directly
+            direct = Path(file_name).expanduser()
+            if ("/" in file_name or "\\" in file_name) and direct.is_file():
+                print(f"[ReadDoc] 📄 {direct}")
+                text   = _read_file(direct)
+                origin = direct.name
+                matches = None
+            else:
+                matches = _find_candidates(file_name)
+            if matches is not None:
+                if not matches:
+                    return (f"I couldn't find a file matching '{file_name}' in "
+                            f"Desktop, Downloads or Documents, sir.")
+                if len(matches) > 1:
+                    names = " | ".join(m.name for m in matches)
+                    return (f"MULTIPLE MATCHES for '{file_name}': {names}. "
+                            f"Call show_option_picker with these file names "
+                            f"(on_select 'say'); when the user picks one, call "
+                            f"read_document again with that exact file_name.")
+                found = matches[0]
+                print(f"[ReadDoc] 📄 {found}")
+                text = _read_file(found)
+                origin = found.name
 
         if text.startswith("[error]"):
             return text
         if not text.strip():
-            return (f"'{origin}' appears to be empty or an image-only scan — "
-                    f"no text I can extract, sir.")
+            return (f"'{origin}' appears to be empty — I even tried OCR but "
+                    f"found no readable text, sir.")
         if player:
             player.write_log(f"[ReadDoc] {origin} — {len(text)} chars")
         return (f"CONTENT OF {origin}:\n\n{_clip(text)}\n\n"

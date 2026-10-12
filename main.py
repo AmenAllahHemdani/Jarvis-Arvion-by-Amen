@@ -682,8 +682,10 @@ TOOL_DECLARATIONS = [
         "description": (
             "Read a document and answer about it. Three sources: "
             "url — any web page, online PDF, or Google Drive/Docs share link; "
-            "file_name — a file on this computer found by (partial) name in "
-            "Desktop/Downloads/Documents (pdf, docx, html, txt, code); "
+            "file_name — a file on this computer: a full path, or a (partial) "
+            "name found in Desktop/Downloads/Documents (pdf, docx, html, txt, "
+            "code, images). Scanned PDFs and images are OCR'd automatically — "
+            "ALWAYS call this for PDFs, never say you can't read one. "
             "source='screen' — read the document currently visible on screen. "
             "Use when the user says 'read this pdf', 'summarize this link', "
             "'what does the file X say', 'read the document on my screen'."
@@ -1110,6 +1112,11 @@ class JarvisLive:
 
             elif name == "read_document":
                 from actions.read_document import read_document
+                # a file dropped into the UI is the implicit target
+                if (not args.get("url") and not args.get("file_name")
+                        and (args.get("source") or "").lower() != "screen"
+                        and self.ui.current_file):
+                    args["file_name"] = self.ui.current_file
                 r = await loop.run_in_executor(None, lambda: read_document(parameters=args, player=self.ui))
                 result = r or "Could not read the document."
 

@@ -173,27 +173,23 @@ def _process_pdf(path: Path, action: str, params: dict, speak=None) -> str:
     action = action or "summarize"
 
     def _extract_pdf_text(max_chars=50000) -> str:
-        text = ""
+        # shared pipeline: PyMuPDF → pypdf → OCR (Apple Vision / tesseract)
         try:
-            import pdfplumber
-            with pdfplumber.open(path) as pdf:
-                for page in pdf.pages:
-                    text += (page.extract_text() or "") + "\n"
+            from actions.read_document import _pdf_text
         except ImportError:
-            try:
-                import PyPDF2
-                with open(path, "rb") as f:
-                    reader = PyPDF2.PdfReader(f)
-                    for page in reader.pages:
-                        text += page.extract_text() + "\n"
-            except ImportError:
-                return ""
+            from read_document import _pdf_text
+        try:
+            text = _pdf_text(path.read_bytes())
+        except Exception as e:
+            print(f"[FileProc] ⚠️ PDF extract failed: {e}")
+            return ""
         return text[:max_chars]
 
     if action in ("summarize", "extract_text", "translate_hint", "analyze", "reformat"):
         text = _extract_pdf_text()
         if not text.strip():
-            return "Could not extract text from PDF (may be scanned/image-based)."
+            return ("Could not extract any text from this PDF — even OCR "
+                    "found nothing readable.")
 
         if action == "extract_text":
             out = _output_path(path, "text", ".txt")

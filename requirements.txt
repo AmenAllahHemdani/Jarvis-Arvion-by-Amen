@@ -19,6 +19,14 @@ send2trash
 youtube-transcript-api
 pyaudio
 
+# Document reading & OCR
+pypdf
+python-docx
+pymupdf
+pytesseract                                   # needs the tesseract binary (brew install tesseract)
+pyobjc-framework-Vision; sys_platform == 'darwin'   # Apple Vision OCR
+pyobjc-framework-Quartz; sys_platform == 'darwin'
+
 # Windows-only packages (skipped automatically on macOS / Linux)
 comtypes; sys_platform == 'win32'
 pycaw; sys_platform == 'win32'
