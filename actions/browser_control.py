@@ -423,6 +423,21 @@ def _ensure_started():
             _bt_started = True
 
 
+def _playwright_session_active() -> bool:
+    """True if an automated (Playwright) browser is already open and connected."""
+    try:
+        return bool(_bt_started and _bt._browser and _bt._browser.is_connected())
+    except Exception:
+        return False
+
+
+_SEARCH_ENGINES = {
+    "google":     "https://www.google.com/search?q={q}",
+    "bing":       "https://www.bing.com/search?q={q}",
+    "duckduckgo": "https://duckduckgo.com/?q={q}",
+}
+
+
 # ── Public API ───────────────────────────────────────────────────────────────
 
 def browser_control(
@@ -450,10 +465,45 @@ def browser_control(
         fields      : {selector: value} dict for fill_form
         clear_first : bool, clear input before typing (default: True)
     """
-    _ensure_started()
-
-    action = (parameters or {}).get("action", "").lower().strip()
+    parameters = parameters or {}
+    action = parameters.get("action", "").lower().strip()
     result = "Unknown action."
+
+    # Plain opens/searches go to the USER'S browser (the one they already
+    # have running — Brave, Chrome, …), never a fresh automated window.
+    # Playwright is only for interactive work: either an automation session
+    # is already live, or the model asked for one with interactive=true.
+    if (action in ("go_to", "search")
+            and not parameters.get("interactive")
+            and not _playwright_session_active()):
+        try:
+            from actions.web_open import open_url
+        except ImportError:
+            from web_open import open_url
+
+        if action == "go_to":
+            url = parameters.get("url", "")
+        else:
+            query  = parameters.get("query", "")
+            engine = (parameters.get("engine") or "google").lower()
+            template = _SEARCH_ENGINES.get(engine, _SEARCH_ENGINES["google"])
+            url = template.format(q=query.replace(" ", "+"))
+
+        if not url:
+            result = "No URL or query provided."
+        else:
+            try:
+                used = open_url(url)
+                result = f"Opened {url} in {used}."
+            except Exception as e:
+                result = f"Browser error: {e}"
+
+        print(f"[Browser] {result[:80]}")
+        if player:
+            player.write_log(f"[browser] {result[:60]}")
+        return result
+
+    _ensure_started()
 
     try:
         if action == "go_to":

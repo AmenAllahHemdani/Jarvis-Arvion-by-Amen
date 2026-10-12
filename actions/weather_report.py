@@ -33,7 +33,11 @@ def weather_action(
     url = f"https://www.google.com/search?q={encoded_query}"
 
     try:
-        webbrowser.open(url)
+        try:
+            from actions.web_open import open_url as _open_in_user_browser
+        except ImportError:
+            from web_open import open_url as _open_in_user_browser
+        _open_in_user_browser(url)
     except Exception:
         msg = f"Sir, I couldn't open the browser for the weather report."
         _speak_and_log(msg, player)

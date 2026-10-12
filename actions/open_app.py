@@ -57,6 +57,59 @@ _APP_ALIASES = {
     "figma":              {"Windows": "Figma",                  "Darwin": "Figma",               "Linux": "figma"},
 }
 
+# Names that are websites, not installed apps — opened in the user's own
+# browser (the running one: Brave, Chrome, …), never a testing instance.
+_WEBSITES = {
+    "linkedin":       "https://www.linkedin.com",
+    "facebook":       "https://www.facebook.com",
+    "youtube":        "https://www.youtube.com",
+    "gmail":          "https://mail.google.com",
+    "google":         "https://www.google.com",
+    "github":         "https://github.com",
+    "twitter":        "https://twitter.com",
+    "x":              "https://x.com",
+    "reddit":         "https://www.reddit.com",
+    "netflix":        "https://www.netflix.com",
+    "chatgpt":        "https://chatgpt.com",
+    "stackoverflow":  "https://stackoverflow.com",
+    "stack overflow": "https://stackoverflow.com",
+    "whatsapp web":   "https://web.whatsapp.com",
+    "google drive":   "https://drive.google.com",
+    "google docs":    "https://docs.google.com",
+    "google maps":    "https://maps.google.com",
+}
+
+
+def _website_url(name: str) -> str:
+    """URL if the requested 'app' is actually a website, else ''."""
+    key = name.lower().strip()
+    if key in _APP_ALIASES:          # real app aliases always win
+        return ""
+    if key in _WEBSITES:
+        return _WEBSITES[key]
+    if "." in key and " " not in key:   # e.g. "linkedin.com", "claude.ai"
+        return f"https://{key}"
+    return ""
+
+
+def _macos_installed_matches(query: str) -> list:
+    """Installed .app names containing the query (for 'which one?' flows)."""
+    from pathlib import Path
+    q = query.lower().strip()
+    if not q:
+        return []
+    found = {}
+    for d in (Path("/Applications"), Path("/Applications/Utilities"),
+              Path("/System/Applications"), Path.home() / "Applications"):
+        try:
+            if d.exists():
+                for p in d.glob("*.app"):
+                    if q in p.stem.lower():
+                        found[p.stem.lower()] = p.stem
+        except PermissionError:
+            continue
+    return sorted(found.values())
+
 
 def _normalize(raw: str) -> str:
     system = platform.system()
@@ -221,6 +274,35 @@ def open_app(
 
     if launcher is None:
         return f"Unsupported OS: {system}"
+
+    # Websites open in the user's own browser, not via Spotlight/app launch.
+    site_url = _website_url(app_name)
+    if site_url:
+        try:
+            from actions.web_open import open_url
+        except ImportError:
+            from web_open import open_url
+        try:
+            used = open_url(site_url)
+            if player:
+                player.write_log(f"[open_app] {app_name} → {used}")
+            return f"Opened {app_name} in {used}, sir."
+        except Exception as e:
+            print(f"[open_app] ⚠️ website open failed: {e}")
+            # fall through to the normal app launcher as a last resort
+
+    # macOS: if the name is ambiguous among installed apps (and not a known
+    # alias), ask instead of guessing — the model shows the radial picker.
+    if system == "Darwin" and app_name.lower().strip() not in _APP_ALIASES:
+        matches = _macos_installed_matches(app_name)
+        if len(matches) > 1:
+            names = " | ".join(matches[:6])
+            return (f"MULTIPLE MATCHES for '{app_name}': {names}. "
+                    f"Call show_option_picker with these app names "
+                    f"(on_select 'say'); when the user picks one, call "
+                    f"open_app again with that exact app_name.")
+        if len(matches) == 1:
+            app_name = matches[0]
 
     normalized = _normalize(app_name)
     print(f"[open_app] 🚀 Launching: {app_name} → {normalized} ({system})")

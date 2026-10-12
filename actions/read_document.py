@@ -149,6 +149,33 @@ def _find_file(name: str) -> Path | None:
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
+def _find_candidates(name: str) -> list[Path]:
+    """All distinct-name matches, newest first (for 'which one?' flows)."""
+    name_low = name.lower().strip()
+    home = Path.home()
+    seen: dict[str, Path] = {}
+    hits: list[Path] = []
+    for d in SEARCH_DIRS:
+        base = home / d if d else home
+        if not base.exists():
+            continue
+        try:
+            pools = [base] + ([s for s in base.iterdir()
+                               if s.is_dir() and not s.name.startswith(".")]
+                              if d else [])
+            for pool in pools:
+                for p in pool.iterdir():
+                    if p.is_file() and name_low in p.name.lower():
+                        key = p.name.lower()
+                        if key not in seen or \
+                           p.stat().st_mtime > seen[key].stat().st_mtime:
+                            seen[key] = p
+        except PermissionError:
+            continue
+    hits = sorted(seen.values(), key=lambda p: -p.stat().st_mtime)
+    return hits[:6]
+
+
 def _read_file(path: Path) -> str:
     ext = path.suffix.lower()
     data = path.read_bytes()
@@ -187,10 +214,17 @@ def read_document(parameters=None, response=None, player=None,
             text = _read_url(url)
             origin = url
         else:
-            found = _find_file(file_name)
-            if not found:
+            matches = _find_candidates(file_name)
+            if not matches:
                 return (f"I couldn't find a file matching '{file_name}' in "
                         f"Desktop, Downloads or Documents, sir.")
+            if len(matches) > 1:
+                names = " | ".join(m.name for m in matches)
+                return (f"MULTIPLE MATCHES for '{file_name}': {names}. "
+                        f"Call show_option_picker with these file names "
+                        f"(on_select 'say'); when the user picks one, call "
+                        f"read_document again with that exact file_name.")
+            found = matches[0]
             print(f"[ReadDoc] 📄 {found}")
             text = _read_file(found)
             origin = found.name

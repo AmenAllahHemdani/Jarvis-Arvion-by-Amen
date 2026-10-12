@@ -138,9 +138,11 @@ TOOL_DECLARATIONS = [
     {
         "name": "open_app",
         "description": (
-            "Opens any application on the Windows computer. "
+            "Opens any application or website on the computer. "
             "Use this whenever the user asks to open, launch, or start any app, "
-            "website, or program. Always call this tool — never just say you opened it."
+            "website (e.g. 'open LinkedIn', 'open Facebook' — these open in the "
+            "user's own browser), or program. "
+            "Always call this tool — never just say you opened it."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -269,14 +271,17 @@ TOOL_DECLARATIONS = [
         "name": "youtube_video",
         "description": (
             "Opens a NEW YouTube video. Use ONLY when the user names new content "
-            "to search and play. NEVER use this to pause/resume/continue media "
-            "that is already open — that is computer_settings action 'play_pause'. "
+            "to search and play. action 'search' returns the TOP 5 results to "
+            "show in the option picker (use when the user wants to choose: "
+            "'give me options', 'search youtube for X'); action 'play_url' "
+            "plays a chosen result's url. NEVER use this to pause/resume media "
+            "already open — that is computer_settings 'play_pause'. "
             "Also: summarizing a video's content, video info, trending videos."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {"type": "STRING", "description": "play | summarize | get_info | trending (default: play)"},
+                "action": {"type": "STRING", "description": "play | search | play_url | summarize | get_info | trending (default: play)"},
                 "query":  {"type": "STRING", "description": "Search query for play action"},
                 "save":   {"type": "BOOLEAN", "description": "Save summary to Notepad (summarize only)"},
                 "region": {"type": "STRING", "description": "Country code for trending e.g. TR, US"},
@@ -329,7 +334,10 @@ TOOL_DECLARATIONS = [
         "name": "browser_control",
         "description": (
             "Controls the web browser. Use for: opening websites, searching the web, "
-            "clicking elements, filling forms, scrolling, any web-based task."
+            "clicking elements, filling forms, scrolling, any web-based task. "
+            "go_to/search open in the user's OWN browser (the one already running — "
+            "Brave, Chrome, …). Set interactive=true on go_to ONLY when you will "
+            "click/type/read the page afterwards (that uses an automated window)."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -342,6 +350,7 @@ TOOL_DECLARATIONS = [
                 "description": {"type": "STRING", "description": "Element description for smart_click/smart_type"},
                 "direction":   {"type": "STRING", "description": "up or down for scroll"},
                 "key":         {"type": "STRING", "description": "Key name for press action"},
+                "interactive": {"type": "BOOLEAN", "description": "For go_to/search: true only when you will click/type/read the page next (opens an automated window instead of the user's browser)"},
                 "incognito":   {"type": "BOOLEAN", "description": "Open in private/incognito mode"},
             },
             "required": ["action"]
@@ -621,6 +630,29 @@ TOOL_DECLARATIONS = [
                 "actions": {"type": "STRING", "description": "Exactly what to do, step by step (e.g. 'open_app Google Chrome, then open_app Microsoft Teams, then open_app Visual Studio Code')"},
             },
             "required": ["trigger", "actions"]
+        }
+    },
+    {
+        "name": "show_option_picker",
+        "description": (
+            "Show choices as a CIRCLE on the HUD, controlled by HAND GESTURES "
+            "through the camera (1 finger = next, pinch = select, open palm = "
+            "cancel) or mouse. This is the DEFAULT way to present ANY choice "
+            "of 2-8 things: multiple matching files/videos/apps/results, any "
+            "'which one?' moment, or the user saying 'give me options / let me "
+            "choose'. Do not read choice-lists aloud — show them here. "
+            "on_select='play' auto-plays the chosen title from media history; "
+            "'say' (default) reports the choice back to you to act on."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "title":     {"type": "STRING", "description": "Short title shown in the center"},
+                "options":   {"type": "ARRAY", "items": {"type": "STRING"},
+                              "description": "2-8 option labels"},
+                "on_select": {"type": "STRING", "description": "'play' (play from media history) or 'say' (default)"},
+            },
+            "required": ["options"]
         }
     },
     {
@@ -1004,26 +1036,63 @@ class JarvisLive:
                 r = await loop.run_in_executor(None, lambda: computer_settings(parameters=args, response=None, player=self.ui))
                 result = r or "Done."
 
+            elif name == "show_option_picker":
+                options = [str(o) for o in (args.get("options") or []) if str(o).strip()]
+                title   = args.get("title") or "Choose"
+                mode    = (args.get("on_select") or "say").lower()
+                if len(options) < 2:
+                    result = "Need at least two options for the picker."
+                else:
+                    def _picker_done(choice, _mode=mode):
+                        if choice is None:
+                            self.ui.write_log("SYS: Picker cancelled")
+                            self._on_text_command(
+                                "[PICKER] cancelled by the user — acknowledge in 3 words.")
+                            return
+                        self.ui.write_log(f"SYS: Selected ▸ {choice}")
+                        if _mode == "play":
+                            try:
+                                from memory import media_history as mh
+                                from actions import youtube_tab
+                                e = mh.find(choice)
+                                if e:
+                                    youtube_tab.play_in_background(e["url"], e["title"])
+                            except Exception as ex:
+                                print(f"[Picker] play failed: {ex}")
+                            self._on_text_command(
+                                f"[PICKER] the user chose '{choice}' and it is now "
+                                f"playing — confirm in one short sentence.")
+                        else:
+                            self._on_text_command(
+                                f"[PICKER] the user chose: {choice} — act on it now.")
+
+                    self.ui.show_option_picker(title, options, _picker_done)
+                    from actions import gesture_picker
+                    threading.Thread(
+                        target=lambda: (time.sleep(0.4), gesture_picker.run(self.ui)),
+                        daemon=True).start()
+                    result = ("Circle picker shown with camera gesture control. "
+                              "Tell the user briefly: one finger to move, pinch "
+                              "to select, open palm to cancel — or click.")
+
             elif name == "media_history":
                 from memory import media_history as mh
                 import subprocess as _sp
                 action = (args.get("action") or "").lower()
                 query  = args.get("query") or ""
+                from actions import youtube_tab
                 if action == "replay":
-                    e = mh.most_recent()
-                    if not e:
-                        result = "No watched videos in my memory yet, sir."
-                    else:
-                        _sp.Popen(["open", e["url"] + "&t=0"])
-                        result = f"Replaying from the start: {e['title'][:70]}"
+                    result = await loop.run_in_executor(
+                        None, youtube_tab.replay_current)
                 elif action == "play":
                     e = mh.find(query)
                     if not e:
                         result = (f"Nothing matching '{query}' in your history, sir. "
                                   f"Use youtube_video to search YouTube instead.")
                     else:
-                        _sp.Popen(["open", e["url"]])
-                        result = f"Playing from your history: {e['title'][:70]}"
+                        result = await loop.run_in_executor(
+                            None, lambda: youtube_tab.play_in_background(
+                                e["url"], e["title"]))
                 elif action == "dismiss":
                     result = mh.dismiss(query)
                 else:

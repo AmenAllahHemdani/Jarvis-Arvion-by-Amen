@@ -49,12 +49,11 @@ _YT_VIDEO_FILTER = "EgIQAQ%3D%3D"
 
 def _open_url(url: str) -> None:
     try:
-        if is_mac():
-            subprocess.Popen(["open", url])
-        elif is_linux():
-            subprocess.Popen(["xdg-open", url])
-        else:
-            subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
+        try:
+            from actions.web_open import open_url
+        except ImportError:
+            from web_open import open_url
+        open_url(url)          # user's running browser, else system default
     except Exception as e:
         print(f"[YouTube] ⚠️ open_url failed: {e}")
 
@@ -89,6 +88,54 @@ def _scrape_first_video_url(query: str) -> str | None:
         print(f"[YouTube] ⚠️ scrape_first_video_url failed: {e}")
 
     return None
+
+def _scrape_search_results(query: str, max_results: int = 5) -> list[dict]:
+    """Top search hits with titles → [{'title', 'url'}] (Shorts skipped)."""
+    if not _REQUESTS_OK:
+        return []
+    search_url = (f"https://www.youtube.com/results"
+                  f"?search_query={quote_plus(query)}&sp={_YT_VIDEO_FILTER}")
+    try:
+        html = requests.get(search_url, headers=HEADERS, timeout=10).text
+        pairs = re.findall(
+            r'"videoId":"([A-Za-z0-9_-]{11})".{0,800}?'
+            r'"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"',
+            html, re.S)
+        out, seen = [], set()
+        for vid, raw_title in pairs:
+            if vid in seen or f"/shorts/{vid}" in html:
+                continue
+            seen.add(vid)
+            try:
+                import json as _json
+                title = _json.loads(f'"{raw_title}"')
+            except Exception:
+                title = raw_title
+            out.append({"title": title.strip()[:70],
+                        "url": f"https://www.youtube.com/watch?v={vid}"})
+            if len(out) >= max_results:
+                break
+        return out
+    except Exception as e:
+        print(f"[YouTube] ⚠️ scrape_search_results failed: {e}")
+        return []
+
+
+def _handle_search(parameters: dict, player) -> str:
+    query = parameters.get("query", "").strip()
+    if not query:
+        return "What should I search for, sir?"
+    if player:
+        player.write_log(f"[YouTube] Options for: {query}")
+    results = _scrape_search_results(query)
+    if not results:
+        return f"No results found for '{query}', sir."
+    lines = " ; ".join(f"{r['title']} -> {r['url']}" for r in results)
+    return (f"YOUTUBE RESULTS for '{query}': {lines}. "
+            f"Call show_option_picker with ONLY the titles (on_select 'say'); "
+            f"when the user picks one, call youtube_video action:'play_url' "
+            f"with that title's url.")
+
 
 def _extract_video_id(url: str) -> str | None:
     match = re.search(
@@ -380,8 +427,18 @@ def _handle_trending(parameters: dict, player, speak) -> str:
 
     return result
 
+def _handle_play_url(parameters: dict, player) -> str:
+    url = (parameters.get("url") or "").strip()
+    if not _is_valid_youtube_url(url):
+        return "That is not a valid YouTube URL, sir."
+    _open_url(url)
+    return "Playing your selection, sir."
+
+
 _ACTION_MAP = {
     "play":      _handle_play,
+    "play_url":  _handle_play_url,
+    "search":    _handle_search,
     "summarize": _handle_summarize,
     "get_info":  _handle_get_info,
     "trending":  _handle_trending,
@@ -410,7 +467,7 @@ def youtube_video(
         )
 
     try:
-        if action == "play":
+        if action in ("play", "play_url", "search"):
             return handler(params, player) or "Done."
         return handler(params, player, speak) or "Done."
     except Exception as e:

@@ -973,6 +973,141 @@ class _DropCanvas(QWidget):
             z.mousePressEvent(e)
 
 
+class RadialPicker(QWidget):
+    """Options arranged in a circle over the HUD. Driven by hand gestures
+    (via JarvisUI.picker_* calls), mouse hover/click, scroll wheel or ESC."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._title    = ""
+        self._options  = []
+        self._selected = 0
+        self._on_done  = None     # callable(option | None)
+        self._chip_rects: list[tuple] = []
+        self.hide()
+
+    # ── lifecycle ──
+    def open(self, title: str, options: list, on_done):
+        self._title    = title or "CHOOSE"
+        self._options  = [str(o)[:48] for o in options][:8]
+        self._selected = 0
+        self._on_done  = on_done
+        self.setGeometry(self.parentWidget().rect())
+        self.show()
+        self.raise_()
+        self.setFocus()
+        self.update()
+
+    def _finish(self, choice):
+        cb, self._on_done = self._on_done, None
+        self.hide()
+        if cb:
+            threading.Thread(target=cb, args=(choice,), daemon=True).start()
+
+    # ── control api (gesture thread → via signals) ──
+    def move_sel(self, delta: int):
+        if self._options and self.isVisible():
+            self._selected = (self._selected + delta) % len(self._options)
+            self.update()
+
+    def choose(self):
+        if self._options and self.isVisible():
+            self._finish(self._options[self._selected])
+
+    def cancel(self):
+        if self.isVisible():
+            self._finish(None)
+
+    # ── mouse / keys ──
+    def mouseMoveEvent(self, ev):
+        idx = self._hit(ev.position())
+        if idx is not None and idx != self._selected:
+            self._selected = idx
+            self.update()
+
+    def mousePressEvent(self, ev):
+        idx = self._hit(ev.position())
+        if idx is not None:
+            self._selected = idx
+            self.choose()
+        # click outside the circle does nothing (use ESC / palm to cancel)
+
+    def wheelEvent(self, ev):
+        self.move_sel(1 if ev.angleDelta().y() < 0 else -1)
+
+    def keyPressEvent(self, ev):
+        k = ev.key()
+        if k == Qt.Key.Key_Escape:
+            self.cancel()
+        elif k in (Qt.Key.Key_Right, Qt.Key.Key_Down, Qt.Key.Key_Tab):
+            self.move_sel(1)
+        elif k in (Qt.Key.Key_Left, Qt.Key.Key_Up):
+            self.move_sel(-1)
+        elif k in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.choose()
+
+    def _hit(self, pos):
+        for i, (x, y, w, h) in enumerate(self._chip_rects):
+            if x <= pos.x() <= x + w and y <= pos.y() <= y + h:
+                return i
+        return None
+
+    # ── painting ──
+    def paintEvent(self, ev):
+        if not self._options:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), qcol(C.BG, 215))
+
+        cx, cy = self.width() / 2, self.height() / 2
+        radius = min(self.width(), self.height()) * 0.33
+        n      = len(self._options)
+
+        # center: title + hints
+        p.setPen(QPen(qcol(C.PRI)))
+        p.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
+        p.drawText(QRectF(cx - 240, cy - 44, 480, 26),
+                   Qt.AlignmentFlag.AlignCenter, f"◈ {self._title.upper()}")
+        p.setPen(QPen(qcol(C.TEXT_DIM)))
+        p.setFont(QFont("Courier New", 8))
+        p.drawText(QRectF(cx - 260, cy - 10, 520, 36),
+                   Qt.AlignmentFlag.AlignCenter,
+                   "☝ flick finger: next  ·  🤏 thumb+index 1s: select\n"
+                   "✋ palm: cancel  ·  or click / scroll / ESC")
+
+        # ring
+        p.setPen(QPen(qcol(C.BORDER_B, 120), 1))
+        p.drawEllipse(QPointF(cx, cy), radius, radius)
+
+        self._chip_rects = []
+        chip_w, chip_h = 230, 40
+        for i, opt in enumerate(self._options):
+            ang = -math.pi / 2 + (2 * math.pi * i) / n
+            x   = cx + radius * math.cos(ang)
+            y   = cy + radius * math.sin(ang)
+            rect = QRectF(x - chip_w / 2, y - chip_h / 2, chip_w, chip_h)
+            self._chip_rects.append((rect.x(), rect.y(), chip_w, chip_h))
+
+            sel = (i == self._selected)
+            p.setBrush(QBrush(qcol(C.PRI_GHO if sel else C.PANEL2,
+                                   245 if sel else 220)))
+            p.setPen(QPen(qcol(C.PRI if sel else C.BORDER), 2 if sel else 1))
+            p.drawRoundedRect(rect, 6, 6)
+            if sel:                                   # glow marker
+                p.setBrush(QBrush(qcol(C.PRI)))
+                p.drawEllipse(QPointF(rect.x() + 12, y), 3, 3)
+            p.setPen(QPen(qcol(C.WHITE if sel else C.TEXT_MED)))
+            p.setFont(QFont("Courier New", 9,
+                            QFont.Weight.Bold if sel else QFont.Weight.Normal))
+            label = opt if len(opt) <= 30 else opt[:29] + "…"
+            p.drawText(rect.adjusted(20, 0, -6, 0),
+                       Qt.AlignmentFlag.AlignVCenter, label)
+        p.end()
+
+
 class SetupOverlay(QWidget):
     done = pyqtSignal(str, str, str)
 
@@ -1128,9 +1263,11 @@ class SetupOverlay(QWidget):
 
 
 class MainWindow(QMainWindow):
-    _log_sig   = pyqtSignal(str)
-    _state_sig = pyqtSignal(str)
-    _badge_sig = pyqtSignal(str, str, str)   # which, text, color
+    _log_sig    = pyqtSignal(str)
+    _state_sig  = pyqtSignal(str)
+    _badge_sig  = pyqtSignal(str, str, str)  # which, text, color
+    _picker_sig = pyqtSignal(str, list)      # title, options (cb in _picker_cb)
+    _picker_ctl = pyqtSignal(str, int)       # "move"|"choose"|"cancel", delta
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -1189,6 +1326,12 @@ class MainWindow(QMainWindow):
         self._state_sig.connect(self._apply_state)
         self._badge_sig.connect(self._apply_badge)
 
+        self._picker    = RadialPicker(self.centralWidget())
+        self._picker_cb = None
+        self._picker_sig.connect(
+            lambda t, o: self._picker.open(t, o, self._picker_cb))
+        self._picker_ctl.connect(self._picker_control)
+
         self._overlay: SetupOverlay | None = None
         self._ready = self._check_config()
         if not self._ready:
@@ -1198,6 +1341,11 @@ class MainWindow(QMainWindow):
         sc_mute.activated.connect(self._toggle_mute)
         sc_full = QShortcut(QKeySequence("F11"), self)
         sc_full.activated.connect(self._toggle_fullscreen)
+
+    def _picker_control(self, what: str, delta: int):
+        if   what == "move":   self._picker.move_sel(delta)
+        elif what == "choose": self._picker.choose()
+        elif what == "cancel": self._picker.cancel()
 
     def _toggle_fullscreen(self):
         if self.isFullScreen():
@@ -1228,7 +1376,10 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self._overlay and self._overlay.isVisible():
+        picker = getattr(self, "_picker", None)
+        if picker and picker.isVisible():
+            picker.setGeometry(self.centralWidget().rect())
+        if getattr(self, "_overlay", None) and self._overlay.isVisible():
             ow, oh = 460, 390
             cw = self.centralWidget()
             self._overlay.setGeometry(
@@ -1769,6 +1920,24 @@ class JarvisUI:
     def set_badge(self, which: str, text: str, color: str = "#00ff88"):
         """Thread-safe badge update: which in {'core', 'bridge', 'model'}."""
         self._win._badge_sig.emit(which, text, color)
+
+    # ── radial option picker (gesture / mouse driven) ──
+    def show_option_picker(self, title: str, options: list, on_done):
+        """on_done(choice | None) is called off the UI thread."""
+        self._win._picker_cb = on_done
+        self._win._picker_sig.emit(title, list(options))
+
+    def picker_visible(self) -> bool:
+        return self._win._picker.isVisible()
+
+    def picker_move(self, delta: int = 1):
+        self._win._picker_ctl.emit("move", delta)
+
+    def picker_select(self):
+        self._win._picker_ctl.emit("choose", 0)
+
+    def picker_cancel(self):
+        self._win._picker_ctl.emit("cancel", 0)
 
     def wait_for_api_key(self):
         while not self._win._ready:
