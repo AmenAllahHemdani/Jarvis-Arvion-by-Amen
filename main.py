@@ -331,6 +331,29 @@ TOOL_DECLARATIONS = [
         }
     },
     {
+        "name": "local_media",
+        "description": (
+            "The user's LOCAL video library — downloaded films and series "
+            "episodes in Downloads/Movies, with watch status detected from VLC "
+            "progress. Use for: 'which episodes/films do I have', 'what have I "
+            "watched', 'delete the watched ones' (cleanup → confirm → "
+            "delete_watched), 'play/give me the next episode of X' "
+            "(next_episode), 'play episode N of X' (play), 'suggest me a "
+            "series/film' (suggest returns the watch history — then YOU "
+            "recommend similar titles yourself)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":  {"type": "STRING", "description": "overview | cleanup | delete_watched | next_episode | play | suggest"},
+                "series":  {"type": "STRING", "description": "Series or film name (for next_episode / play)"},
+                "episode": {"type": "INTEGER", "description": "Episode number (for play)"},
+                "confirm": {"type": "BOOLEAN", "description": "true only AFTER the user confirmed deletion"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
         "name": "browser_control",
         "description": (
             "Controls the web browser. Use for: opening websites, searching the web, "
@@ -1002,6 +1025,11 @@ class JarvisLive:
 
             elif name == "youtube_video":
                 r = await loop.run_in_executor(None, lambda: youtube_video(parameters=args, response=None, player=self.ui))
+                result = r or "Done."
+
+            elif name == "local_media":
+                from actions.local_media import local_media
+                r = await loop.run_in_executor(None, lambda: local_media(parameters=args, player=self.ui))
                 result = r or "Done."
 
             elif name == "explain_file":

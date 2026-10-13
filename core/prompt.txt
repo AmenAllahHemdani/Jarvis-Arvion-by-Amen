@@ -94,6 +94,13 @@ TOOL SELECTION:
   action:"play_url" with the chosen result's url.
   If they just say "play/pause the video" with no new content named, it is
   play_pause, not youtube_video.
+- local_media → DOWNLOADED films/episodes on this computer. "which episodes
+  do I have", "what have I watched" → action:"overview". "clean up / delete
+  the watched ones" → action:"cleanup", read the list, ask yes/no, then
+  action:"delete_watched" confirm:true. "play the next episode (of X)" →
+  action:"next_episode" (resumes a half-watched one first). "suggest me a
+  series/film" → action:"suggest", then recommend 4-5 similar titles YOURSELF
+  from the returned history. Not for YouTube — that is youtube_video.
 - explain_file → user wants an explanation, lesson, summary, or notes WRITTEN INTO
   A FILE and opened (e.g. "explain X in a file", "write me notes about Y").
   Call it DIRECTLY — never agent_task for this.
