@@ -948,6 +948,10 @@ class JarvisLive:
 
         if name == "behavior_suggestion_response":
             from memory import behavior
+            try:
+                self.ui.hide_offer()
+            except Exception:
+                pass
             sid      = str(args.get("id", ""))
             accepted = str(args.get("accepted", "")).lower() in ("true", "1", "yes")
             result   = behavior.respond_suggestion(sid, accepted)
@@ -1108,6 +1112,10 @@ class JarvisLive:
             elif name == "media_history":
                 from memory import media_history as mh
                 import subprocess as _sp
+                try:
+                    self.ui.hide_offer()
+                except Exception:
+                    pass
                 action = (args.get("action") or "").lower()
                 query  = args.get("query") or ""
                 from actions import youtube_tab
@@ -1243,6 +1251,12 @@ class JarvisLive:
                 e = None
             if e and self.session:
                 print(f"[MediaHistory] 💿 offering: {e['title'][:50]}")
+                try:
+                    self.ui.show_offer(
+                        "MEDIA OFFER",
+                        f"Play it again?\n{e['title'][:90]}\n(played {e['count']}×)")
+                except Exception:
+                    pass
                 await self.session.send_client_content(
                     turns={"role": "user", "parts": [{"text":
                         f"[MEDIA] (system observation, not the user speaking) "
@@ -1254,6 +1268,13 @@ class JarvisLive:
                     turn_complete=True)
             return
         print(f"[Behavior] 💡 suggesting habit: {s['id']}")
+        try:
+            self.ui.show_offer(
+                "HABIT SUGGESTION",
+                f"Create voice command '{s['trigger']}' → opens "
+                f"{', '.join(s['apps'])}?")
+        except Exception:
+            pass
         await self.session.send_client_content(
             turns={"role": "user", "parts": [{"text":
                 f"[HABIT] (system observation, not the user speaking) The user "

@@ -1268,6 +1268,8 @@ class MainWindow(QMainWindow):
     _badge_sig  = pyqtSignal(str, str, str)  # which, text, color
     _picker_sig = pyqtSignal(str, list)      # title, options (cb in _picker_cb)
     _picker_ctl = pyqtSignal(str, int)       # "move"|"choose"|"cancel", delta
+    _offer_sig  = pyqtSignal(str, str)       # title, text — suggestion card
+    _offer_hide = pyqtSignal()
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -1325,6 +1327,8 @@ class MainWindow(QMainWindow):
         self._log_sig.connect(self._log.append_log)
         self._state_sig.connect(self._apply_state)
         self._badge_sig.connect(self._apply_badge)
+        self._offer_sig.connect(self._show_offer)
+        self._offer_hide.connect(self._hide_offer)
 
         self._picker    = RadialPicker(self.centralWidget())
         self._picker_cb = None
@@ -1672,6 +1676,45 @@ class MainWindow(QMainWindow):
         self._log = LogWidget()
         lay.addWidget(self._log, stretch=1)
 
+        # ── suggestion / offer card (hidden until Jarvis offers something) ──
+        self._offer_card = QFrame()
+        self._offer_card.setStyleSheet(
+            "QFrame { background: #171200; border: 1px solid #ffcc00;"
+            " border-radius: 4px; }")
+        oc = QVBoxLayout(self._offer_card)
+        oc.setContentsMargins(8, 6, 8, 8)
+        oc.setSpacing(5)
+        self._offer_title = QLabel("💡 SUGGESTION")
+        self._offer_title.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        self._offer_title.setStyleSheet(
+            "color: #ffcc00; background: transparent; border: none;")
+        oc.addWidget(self._offer_title)
+        self._offer_text = QLabel("")
+        self._offer_text.setFont(QFont("Courier New", 8))
+        self._offer_text.setWordWrap(True)
+        self._offer_text.setStyleSheet(
+            f"color: {C.WHITE}; background: transparent; border: none;")
+        oc.addWidget(self._offer_text)
+        btn_row = QHBoxLayout(); btn_row.setSpacing(5)
+        for label, answer, col in (("✓ YES", "yes", C.GREEN),
+                                   ("✗ NO",  "no",  C.TEXT_MED)):
+            b = QPushButton(label)
+            b.setFixedHeight(24)
+            b.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(
+                f"QPushButton {{ background: transparent; color: {col};"
+                f" border: 1px solid {col}; border-radius: 3px; }}"
+                f"QPushButton:hover {{ background: {C.PRI_GHO}; }}")
+            b.clicked.connect(lambda _, a=answer: self._answer_offer(a))
+            btn_row.addWidget(b)
+        oc.addLayout(btn_row)
+        self._offer_card.hide()
+        self._offer_tmr = QTimer(self)
+        self._offer_tmr.setSingleShot(True)
+        self._offer_tmr.timeout.connect(self._hide_offer)
+        lay.addWidget(self._offer_card)
+
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
         sep.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
         lay.addWidget(sep)
@@ -1824,6 +1867,25 @@ class MainWindow(QMainWindow):
         if self.on_text_command:
             threading.Thread(target=self.on_text_command, args=(txt,), daemon=True).start()
 
+    # ── suggestion / offer card ──
+
+    def _show_offer(self, title: str, text: str):
+        self._offer_title.setText(f"💡 {title}")
+        self._offer_text.setText(text)
+        self._offer_card.show()
+        self._offer_tmr.start(180_000)       # auto-hide after 3 minutes
+
+    def _hide_offer(self):
+        self._offer_tmr.stop()
+        self._offer_card.hide()
+
+    def _answer_offer(self, answer: str):
+        self._hide_offer()
+        self._log.append_log(f"You: {answer}")
+        if self.on_text_command:
+            threading.Thread(target=self.on_text_command, args=(answer,),
+                             daemon=True).start()
+
     def _apply_state(self, state: str):
         self.hud.state    = state
         self.hud.speaking = (state == "SPEAKING")
@@ -1920,6 +1982,13 @@ class JarvisUI:
     def set_badge(self, which: str, text: str, color: str = "#00ff88"):
         """Thread-safe badge update: which in {'core', 'bridge', 'model'}."""
         self._win._badge_sig.emit(which, text, color)
+
+    def show_offer(self, title: str, text: str):
+        """Thread-safe: show a suggestion card with YES/NO in the right panel."""
+        self._win._offer_sig.emit(title, text)
+
+    def hide_offer(self):
+        self._win._offer_hide.emit()
 
     # ── radial option picker (gesture / mouse driven) ──
     def show_option_picker(self, title: str, options: list, on_done):
