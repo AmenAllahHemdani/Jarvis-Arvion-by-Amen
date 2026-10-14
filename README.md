@@ -38,6 +38,10 @@ voice, with OpenRouter free models as auxiliary brains.
 
 ## Quick start
 
+> **📖 Full setup guide: [SETUP.md](SETUP.md)** — macOS permissions
+> (Accessibility, Screen Recording…), every API key, optional tools
+> (Tesseract OCR, Ollama, WhatsApp), and troubleshooting.
+
 ```bash
 git clone git@github.com:AmenAllahHemdani/Jarvis-Arvion-by-Amen.git
 cd Jarvis-Arvion-by-Amen
