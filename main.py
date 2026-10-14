@@ -237,13 +237,21 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "send_message",
-        "description": "Sends a text message via WhatsApp, Telegram, or other messaging platform.",
+        "description": (
+            "Sends a text message via WhatsApp, Telegram, or other messaging "
+            "platform. WhatsApp: finds the contact by NAME in the chat list "
+            "automatically — never ask for a phone number up front. If the "
+            "result says MULTIPLE MATCHES, show the option picker. Only if "
+            "the result explicitly asks for a phone number, ask the user and "
+            "retry with 'phone' filled (it is remembered afterwards)."
+        ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "receiver":     {"type": "STRING", "description": "Recipient contact name"},
                 "message_text": {"type": "STRING", "description": "The message to send"},
-                "platform":     {"type": "STRING", "description": "Platform: WhatsApp, Telegram, etc."}
+                "platform":     {"type": "STRING", "description": "Platform: WhatsApp, Telegram, etc."},
+                "phone":        {"type": "STRING", "description": "Recipient phone number with country code (e.g. +216...). Only needed once per contact for WhatsApp."}
             },
             "required": ["receiver", "message_text", "platform"]
         }
@@ -328,6 +336,25 @@ TOOL_DECLARATIONS = [
                 "app_name":    {"type": "STRING", "description": "Target application name for close_app (e.g. 'Teams', 'Chrome'). REQUIRED when the user names an app to close."}
             },
             "required": []
+        }
+    },
+    {
+        "name": "whatsapp_chats",
+        "description": (
+            "READS WhatsApp (macOS app). action 'unread' — which chats have "
+            "new/unread messages. action 'read' — the last messages of a "
+            "chat by contact name ('what did X say', 'read my messages with "
+            "X', 'any news from X'). To REPLY afterwards use send_message. "
+            "Note: reading a chat marks it as read in WhatsApp."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "unread | read"},
+                "chat":   {"type": "STRING", "description": "Contact/chat name for 'read'"},
+                "limit":  {"type": "INTEGER", "description": "How many last messages (default 8)"},
+            },
+            "required": ["action"]
         }
     },
     {
@@ -1034,6 +1061,11 @@ class JarvisLive:
             elif name == "local_media":
                 from actions.local_media import local_media
                 r = await loop.run_in_executor(None, lambda: local_media(parameters=args, player=self.ui))
+                result = r or "Done."
+
+            elif name == "whatsapp_chats":
+                from actions.whatsapp_ui import whatsapp_chats
+                r = await loop.run_in_executor(None, lambda: whatsapp_chats(parameters=args, player=self.ui))
                 result = r or "Done."
 
             elif name == "explain_file":
